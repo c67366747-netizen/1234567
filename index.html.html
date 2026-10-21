@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>얼굴 인식 및 좌표 표시</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: #101827; color: #f3f6fb;
+    font-family: Arial, "Malgun Gothic", sans-serif; text-align: center;
+  }
+  h1 { margin: 0 0 8px; font-size: 26px; }
+  p { color: #b8c4d8; margin: 0 0 20px; }
+  .stage {
+    position: relative; width: min(100%, 960px); margin: 0 auto;
+    background: #000; border: 1px solid #34445c; border-radius: 12px;
+    overflow: hidden; line-height: 0;
+  }
+  video { display: block; width: 100%; height: auto; transform: scaleX(-1); }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .controls { margin: 18px auto 0; display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+  button {
+    border: 0; border-radius: 8px; padding: 11px 18px; cursor: pointer;
+    font-size: 15px; font-weight: 700; color: #fff; background: #2878f0;
+  }
+  button.stop { background: #475569; }
+  #status { margin-top: 14px; min-height: 24px; color: #cbd5e1; }
+  .note { max-width: 960px; margin: 14px auto 0; font-size: 13px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<h1>얼굴 인식 및 위치 좌표</h1>
+<p>웹캠 화면의 왼쪽 상단에 얼굴 좌표가 표시됩니다.</p>
+
+<div class="stage">
+  <video id="video" autoplay muted playsinline></video>
+  <canvas id="overlay"></canvas>
+</div>
+<div class="controls">
+  <button id="start">카메라 시작</button>
+  <button id="stop" class="stop">카메라 끄기</button>
+</div>
+<div id="status">카메라 시작을 눌러 주세요.</div>
+<div class="note">얼굴 인식은 브라우저 안에서 처리됩니다. 카메라 권한이 필요하며, 일부 브라우저에서는 localhost 또는 HTTPS에서 실행해야 합니다.</div>
+
+<script type="module">
+import { FaceDetector, FilesetResolver } from
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("overlay");
+const ctx = canvas.getContext("2d");
+const statusEl = document.getElementById("status");
+const startBtn = document.getElementById("start");
+const stopBtn = document.getElementById("stop");
+
+let detector = null;
+let stream = null;
+let running = false;
+let rafId = null;
+
+async function setupDetector() {
+  if (detector) return detector;
+  statusEl.textContent = "얼굴 인식 모델을 불러오는 중...";
+  const vision = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+  );
+  detector = await FaceDetector.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath:
+        "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+      delegate: "CPU"
+    },
+    runningMode: "VIDEO",
+    minDetectionConfidence: 0.5
+  });
+  return detector;
+}
+
+function draw() {
+  if (!running || video.readyState < 2) {
+    if (running) rafId = requestAnimationFrame(draw);
+    return;
+  }
+
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  if (!width || !height) {
+    rafId = requestAnimationFrame(draw);
+    return;
+  }
+
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  ctx.clearRect(0, 0, width, height);
+
+  try {
+    const result = detector.detectForVideo(video, performance.now());
+    const detections = result.detections || [];
+
+    // 화면 좌우 반전 영상에 맞춰 좌표를 반전해 표시
+    if (detections.length > 0) {
+      const box = detections.reduce((largest, item) => {
+        const b = item.boundingBox;
+        return !largest || b.width * b.height > largest.boundingBox.width * largest.boundingBox.height
+          ? item : largest;
+      }, null).boundingBox;
+
+      const x = Math.round(width - box.originX - box.width);
+      const y = Math.round(box.originY);
+      const w = Math.round(box.width);
+      const h = Math.round(box.height);
+      const cx = Math.round(x + w / 2);
+      const cy = Math.round(y + h / 2);
+
+      ctx.strokeStyle = "#00ff78";
+      ctx.lineWidth = Math.max(2, width / 400);
+      ctx.strokeRect(x, y, w, h);
+
+      // 왼쪽 상단 정보 패널
+      ctx.fillStyle = "rgba(0, 0, 0, 0.82)";
+      ctx.fillRect(10, 10, 290, 112);
+      ctx.font = `bold ${Math.max(14, width / 65)}px Arial`;
+      ctx.fillStyle = "#00ff78";
+      ctx.fillText("Face: Detected", 20, 34);
+      ctx.font = `${Math.max(12, width / 78)}px Arial`;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(`X: ${x}  Y: ${y}`, 20, 59);
+      ctx.fillText(`W: ${w}  H: ${h}`, 20, 82);
+      ctx.fillText(`Center: (${cx}, ${cy})`, 20, 105);
+      statusEl.textContent = "얼굴을 인식했습니다.";
+    } else {
+      ctx.fillStyle = "rgba(0, 0, 0, 0.82)";
+      ctx.fillRect(10, 10, 245, 48);
+      ctx.font = `bold ${Math.max(14, width / 65)}px Arial`;
+      ctx.fillStyle = "#ff6565";
+      ctx.fillText("Face: Not detected", 20, 40);
+      statusEl.textContent = "얼굴을 찾지 못했습니다. 카메라를 향해 주세요.";
+    }
+  } catch (error) {
+    statusEl.textContent = "얼굴 인식 중 오류가 발생했습니다.";
+    console.error(error);
+  }
+
+  rafId = requestAnimationFrame(draw);
+}
+
+startBtn.addEventListener("click", async () => {
+  try {
+    startBtn.disabled = true;
+    await setupDetector();
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user" }, audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    running = true;
+    statusEl.textContent = "카메라 실행 중...";
+    draw();
+  } catch (error) {
+    statusEl.textContent =
+      "실행할 수 없습니다. 카메라 권한을 허용하고 HTTPS 또는 localhost에서 열어 주세요.";
+    console.error(error);
+  } finally {
+    startBtn.disabled = false;
+  }
+});
+
+stopBtn.addEventListener("click", () => {
+  running = false;
+  if (rafId) cancelAnimationFrame(rafId);
+  if (stream) stream.getTracks().forEach(track => track.stop());
+  stream = null;
+  video.srcObject = null;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  statusEl.textContent = "카메라가 꺼졌습니다.";
+});
+</script>
+</body>
+</html>
